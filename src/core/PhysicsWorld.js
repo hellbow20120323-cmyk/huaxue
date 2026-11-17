@@ -61,7 +61,7 @@ export class PhysicsWorld {
       })
     )
 
-    // 雪面 × 障碍物：树木岩石需要稳稳立住，摩擦给大一些
+    // 雪面 × 障碍物：树木与旗门需要稳稳立住，摩擦给大一些
     this.world.addContactMaterial(
       new CANNON.ContactMaterial(ground, obstacle, {
         friction: 0.4,

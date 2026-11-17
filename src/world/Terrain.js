@@ -17,15 +17,34 @@ import { createNoise2D } from '../utils/PerlinNoise.js'
  */
 
 // ---- 地形参数（全部为米）----
-const CHUNK_WIDTH = 160 // 雪道宽度，足够第 5 步左右移动
+// 雪道加宽到 240m：镜头两侧的地形边界被推得更远，配合雾效不会看到明显的地平线切边
+const CHUNK_WIDTH = 240
 const CHUNK_DEPTH = 64 // 单个 Chunk 沿下滑方向的长度
 const CELL_SIZE = 8 // 网格边长：8m 的大格子形成低多边形块面感
-const SEG_X = CHUNK_WIDTH / CELL_SIZE // 20 段
+const SEG_X = CHUNK_WIDTH / CELL_SIZE // 30 段
 const SEG_Z = CHUNK_DEPTH / CELL_SIZE // 8 段
 const HALF_WIDTH = CHUNK_WIDTH / 2
 
-// 基础坡度：0.16 ≈ 9.1°，与玩家前向推力配合后能获得明显的速降感
-const GRADE = 0.16
+// 基础坡度：0.19 ≈ 10.8°，比早期版本更陡，配合前向推力能更快进入高速
+const GRADE = 0.19
+
+// U 型雪道：底部加宽到 ±22m，玩家有更充裕的走线空间
+export const TRACK_HALF = 22
+// 树墙内缘距赛道中线的横向距离（谷壁开始抬升后的位置）
+export const TRACK_WALL = TRACK_HALF + 5
+// 谷壁抛物线的二次项系数：比之前的 0.075 更缓，山壁过渡更自然
+const WALL_CURVE = 0.042
+// 谷壁最大高度，避免远端网格被抬到不合理的高度
+const WALL_MAX_RISE = 48
+
+// S 型弯道：中线随下滑距离左右摆动
+// 振幅 18m、波长约 300m，最大横移斜率约 0.38（约 21°），需要持续切弯
+const CURVE_AMPLITUDE = 18
+const CURVE_FREQUENCY = (Math.PI * 2) / 300
+
+// 面条雪条纹的世界间距（米）：每隔约 1.1m 一条压雪机纹路
+const CORDUROY_SPACING = 1.1
+
 // 地形种子：固定后每次运行生成完全相同的雪道，便于调试
 const TERRAIN_SEED = 20261117
 
@@ -50,20 +69,54 @@ export class Terrain {
     this.chunkWidth = CHUNK_WIDTH
     this.chunkDepth = CHUNK_DEPTH
 
-    // Chunk 生命周期回调：由障碍物系统注册，实现树木 / 岩石随地形同步生成与回收
+    // Chunk 生命周期回调：由障碍物系统注册，实现树墙 / 旗门随地形同步生成与回收
     this.onChunkCreated = null
     this.onChunkDestroyed = null
 
     // 让出生点 (0, 0) 的高度恰好为 0，方便玩家在固定高度出生
     this.originOffset = this.rawHeight(0, 0)
 
-    // 所有 Chunk 共用一份材质，避免重复创建与显存浪费
+    // 所有 Chunk 共用一份材质，避免重复创建与显存浪费。
+    // 面条雪效果：用程序化条纹同时作为 roughnessMap 与 bumpMap，
+    // 沟槽处更光滑、有轻微凹凸，逆光时能看到细密的压雪纹路
+    this.corduroyTexture = this.createCorduroyTexture()
     this.material = new THREE.MeshStandardMaterial({
+      color: 0xffffff, // 雪地基础色保持纯白，颜色交给光照塑造
       vertexColors: true, // 每个三角面有轻微明暗 / 冷色差异，白色雪面才有层次
       roughness: 0.94,
       metalness: 0,
       flatShading: true,
+      roughnessMap: this.corduroyTexture,
+      bumpMap: this.corduroyTexture,
+      bumpScale: 0.012,
     })
+  }
+
+  /**
+   * 生成「面条雪」条纹贴图。
+   * 宽度方向画一条暗带，配合 RepeatWrapping 沿 X 轴平铺，
+   * 世界坐标下每 1.1m 就压出一道雪槽。
+   */
+  createCorduroyTexture() {
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 8
+
+    const context = canvas.getContext('2d')
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, 64, 8)
+    // 主沟槽 + 柔和的过渡带，避免条纹边缘过于生硬
+    context.fillStyle = '#8f9dab'
+    context.fillRect(0, 0, 4, 8)
+    context.fillStyle = '#c3ccd6'
+    context.fillRect(4, 0, 2, 8)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.wrapS = THREE.RepeatWrapping
+    texture.wrapT = THREE.RepeatWrapping
+    // 掠射角下条纹容易闪烁，开一点各向异性过滤
+    texture.anisotropy = 4
+    return texture
   }
 
   /**
@@ -71,24 +124,36 @@ export class Terrain {
    * @param {number} x 世界 X
    * @param {number} z 世界 Z
    */
+  /**
+   * 赛道中线的世界 X 坐标。
+   * 用下滑距离驱动正弦，形成连续的 S 型弯；起点（z=0）处正好为 0。
+   * 地形、树墙、旗门与面条雪纹理都基于它对齐。
+   * @param {number} z 世界 Z
+   */
+  getCenterX(z) {
+    return Math.sin(-z * CURVE_FREQUENCY) * CURVE_AMPLITUDE
+  }
+
   rawHeight(x, z) {
     // d = 距离起点的下滑距离，随着前进不断增大
     const d = -z
+    // 当前纵深处的赛道中线；谷壁与路面都相对于它计算
+    const lateral = x - this.getCenterX(z)
+    const absLateral = Math.abs(lateral)
 
     // 1. 基础坡面：z 越负（越靠前），高度越低，形成向 -Z 的下坡
     let height = -d * GRADE
 
-    // 2. 大尺度山体起伏：控制整条雪道的走向与高低变化
-    height += this.noise.fbm(x * 0.02, d * 0.02, 3) * 4.5
+    // 2. U 型谷壁：中线两侧 ±TRACK_HALF 内保持平缓，之外按抛物线向上翘起
+    const wall = Math.max(0, absLateral - TRACK_HALF)
+    height += Math.min(wall * wall * WALL_CURVE, WALL_MAX_RISE)
 
-    // 3. 中尺度雪包：制造连续的小坡与侧向起伏
-    height += this.noise.fbm(x * 0.075 + 31.7, d * 0.075 + 13.1, 2) * 1.2
+    // 3. 山体起伏只叠加在谷壁上，离赛道越远越强
+    const wallBlend = Math.min(1, wall / 20)
+    height += this.noise.fbm(x * 0.03, d * 0.03, 3) * 8 * wallBlend
 
-    // 4. 飞包：沿下坡方向周期性出现的圆润跳台，横向相位随 X 缓慢变化。
-    //    三次方让波峰更尖锐、波谷更平缓，玩家高速通过时会被轻微抛起。
-    const phase = d * 0.15 + this.noise.noise2D(x * 0.01, 7.3) * 2.2
-    const kicker = Math.max(0, Math.sin(phase))
-    height += kicker * kicker * kicker * 1.5
+    // 4. 赛道路面只保留非常轻微的起伏（压雪机压过的顺滑感）
+    height += this.noise.fbm(x * 0.12 + 7.3, d * 0.1 + 2.7, 2) * 0.45
 
     return height
   }
@@ -163,6 +228,9 @@ export class Terrain {
    */
   createChunkMesh(startZ) {
     const positions = []
+    // 面条雪需要 UV：U 用世界 X 坐标，保证条纹跨 Chunk 连续；
+    // V 只沿坡度方向平铺即可（纹理本身是纵向均匀的条纹）
+    const uvs = []
 
     for (let j = 0; j < SEG_Z; j++) {
       // 局部 Z：0 → -CHUNK_DEPTH（Three.js 中网格会整体平移到 startZ）
@@ -189,11 +257,28 @@ export class Terrain {
           xRight, yRightFar, zFar,
           xLeft, yLeftFar, zFar
         )
+
+        // 条纹沿赛道中线对齐：U 轴用「相对中线的横向距离」，
+        // 这样弯道里的面条雪纹路会跟着雪道一起弯，而不是始终沿世界 X 轴
+        const uLeft = (xLeft - this.getCenterX(startZ + zNear)) / CORDUROY_SPACING
+        const uRight = (xRight - this.getCenterX(startZ + zNear)) / CORDUROY_SPACING
+        const vNear = (startZ + zNear) / 8
+        const vFar = (startZ + zFar) / 8
+        uvs.push(
+          uLeft, vNear,
+          uRight, vNear,
+          uLeft, vFar,
+
+          uRight, vNear,
+          uRight, vFar,
+          uLeft, vFar
+        )
       }
     }
 
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
     // 非索引几何体调用 computeVertexNormals 会得到逐三角形的平面法线
     geometry.computeVertexNormals()
 
@@ -208,7 +293,8 @@ export class Terrain {
       const seed = Math.sin(positions[v] * 12.9898 + positions[v + 2] * 78.233) * 43758.5453
       const tint = seed - Math.floor(seed)
 
-      const brightness = 0.80 + 0.16 * Math.max(0, normalY) + 0.05 * tint
+      // 保持接近纯白的底色，只留少量明暗差，避免雪面被染成土色
+      const brightness = 0.86 + 0.11 * Math.max(0, normalY) + 0.03 * tint
       for (let k = 0; k < 9; k += 3) {
         // 略微偏蓝，阴影面更像雪地反射的天空光
         colors[v + k] = brightness * 0.92

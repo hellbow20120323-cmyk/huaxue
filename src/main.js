@@ -8,6 +8,9 @@ import { AudioManager } from './core/AudioManager.js'
 import { Player } from './entities/Player.js'
 import { Terrain } from './world/Terrain.js'
 import { ObstacleField } from './world/Obstacles.js'
+import { SnowTrail } from './effects/SnowTrail.js'
+import { GateBurst } from './effects/GateBurst.js'
+import { FloatingText } from './effects/FloatingText.js'
 
 /**
  * 雪境速降 · MVP 主入口
@@ -35,7 +38,7 @@ function init() {
   // ========== STEP 04：程序化无尽地形 ==========
   const terrain = new Terrain(scene, physics)
 
-  // ========== STEP 05：障碍物与对象池 ==========
+  // ========== STEP 05：商业雪道障碍（树墙 + 旗门） ==========
   // 障碍物完全跟随地形 Chunk 的生命周期：Chunk 生成时布置，销毁时归还池
   const obstacles = new ObstacleField(scene, physics, terrain)
   terrain.onChunkCreated = (index, startZ) => obstacles.spawnChunk(index, startZ)
@@ -51,10 +54,58 @@ function init() {
   })
   const cameraRig = new CameraRig(camera)
   // 开局直接对齐理想机位，避免相机从初始位置飞向玩家
-  cameraRig.snap(player.visual.position)
+  cameraRig.snap(player.visual.position, player.getHeadWorldPosition(new THREE.Vector3()))
 
   // 相机防穿地用的地形采样回调：缓存一份，避免每帧新建闭包
   const groundHeightAt = (x, z) => terrain.getHeightAt(x, z)
+
+  // 雪板扬雪尾迹：预分配粒子，运行期只更新缓冲
+  const snowTrail = new SnowTrail(scene)
+  // 过门爆发粒子
+  const gateBurst = new GateBurst(scene)
+  // 头顶浮动文字（DOM 投影层）
+  const floatingText = new FloatingText(document.getElementById('floaters'))
+
+  // 复用的向量，避免主循环每帧分配
+  const cameraHead = new THREE.Vector3()
+  const headTop = new THREE.Vector3()
+
+  // ---- 连击 / Fever ----
+  // 连续穿过 5 扇旗门进入 Fever；错过任意一扇或撞击都会清零
+  const FEVER_COMBO = 5
+  let combo = 0
+  let fever = false
+  // 0..1 的平滑强度：用于 FOV、彩虹尾迹等视觉过渡
+  let feverFactor = 0
+  let score = 0
+
+  // ---- 穿门奖励：粒子爆发 + 短暂加速 + FOV 冲击 + Combo ----
+  obstacles.onGatePassed = (gate) => {
+    const gatePos = gate.group.position
+    gateBurst.burst(gatePos.x, gatePos.y + 1.6, gatePos.z, gate.color, 56)
+    player.applyBoost()
+    cameraRig.addFovPunch(7)
+
+    combo += 1
+    // 连击越高，单门得分越高（最多 10 倍），鼓励连续精准穿门
+    score += 100 * Math.min(combo, 10)
+    if (scoreEl) scoreEl.textContent = String(score)
+
+    if (combo >= FEVER_COMBO) setFever(true)
+    updateComboHud()
+  }
+
+  // ---- 错过旗门：Combo 清零，Fever 立即结束 ----
+  obstacles.onGateMissed = () => {
+    if (combo > 1) {
+      player.getHeadWorldPosition(headTop)
+      headTop.y += 1.2
+      floatingText.show('COMBO LOST', headTop, { color: '#ffd2d2', size: 16, life: 0.9 })
+    }
+    combo = 0
+    setFever(false)
+    updateComboHud()
+  }
 
   // 输入统一层：桌面键盘 + 移动端左右半屏触控
   const input = new InputController()
@@ -78,6 +129,10 @@ function init() {
   const speedEl = document.getElementById('speed')
   const distanceEl = document.getElementById('distance')
   const bestEl = document.getElementById('best')
+  const scoreEl = document.getElementById('score')
+  const comboEl = document.getElementById('combo')
+  const comboValueEl = document.getElementById('combo-value')
+  const viewButton = document.getElementById('view')
 
   // ========== 撞击结算与重开 ==========
   const gameoverEl = document.getElementById('gameover')
@@ -85,6 +140,7 @@ function init() {
   const finalDistanceEl = document.getElementById('final-distance')
   const finalSpeedEl = document.getElementById('final-speed')
   const finalBestEl = document.getElementById('final-best')
+  const finalScoreEl = document.getElementById('final-score')
   const restartButton = document.getElementById('restart')
 
   // 最佳距离持久化：隐私模式下读写失败时退化为内存记录
@@ -118,10 +174,65 @@ function init() {
 
   muteButton?.addEventListener('click', handleMuteClick)
 
+  // ---- 连击 HUD：Combo 数 + Fever 高亮 ----
+  function updateComboHud() {
+    if (comboEl) {
+      comboEl.hidden = combo < 1
+      comboEl.classList.toggle('is-fever', fever)
+    }
+    if (comboValueEl) comboValueEl.textContent = String(combo)
+  }
+
+  /** 进入 / 退出 Fever：同步玩家限速、HUD 与一次性爆发反馈 */
+  function setFever(active) {
+    if (fever === active) return
+
+    fever = active
+    player.setFever(active)
+    updateComboHud()
+
+    if (active) {
+      // 进入 Fever 的瞬间给一个额外加速与 FOV 冲击，明确告诉玩家「状态变了」
+      player.applyBoost(1.2)
+      cameraRig.addFovPunch(12)
+      player.getHeadWorldPosition(headTop)
+      headTop.y += 1.4
+      floatingText.show('FEVER MODE!', headTop, {
+        color: '#ffe066',
+        size: 26,
+        life: 1.5,
+      })
+    }
+  }
+
+  // ---- 视角切换：V 键 / 右上角按钮 ----
+  function toggleView() {
+    const mode = cameraRig.toggleView()
+    player.setFirstPerson(mode === 'first')
+    if (viewButton) {
+      viewButton.textContent = mode === 'first' ? '第一人称' : '第三人称'
+      viewButton.setAttribute('aria-pressed', String(mode === 'first'))
+    }
+    audio.click()
+  }
+
+  function handleViewKey(event) {
+    if (event.code === 'KeyV') {
+      event.preventDefault()
+      toggleView()
+    }
+  }
+
+  viewButton?.addEventListener('click', toggleView)
+  window.addEventListener('keydown', handleViewKey)
+
   // 当前是否处于滑行中；撞击后置为 false，物理世界随之冻结
   let running = true
   // 本局最高速度（km/h）
   let maxSpeedKmh = 0
+  // 滞空计时与首次落地标记：出生时的下坠不算腾空奖励
+  let airTime = 0
+  let hasLanded = false
 
   /** 撞到障碍：冻结物理、震屏、播放撞击音、更新最佳距离并展示结算面板 */
   function crash(impact = 6) {
@@ -130,6 +241,12 @@ function init() {
     running = false
     input.reset() // 清空按键，避免重开瞬间仍带着转向输入
     player.setSteer(0) // 身体姿态回正
+
+    // 连击中断：Fever 立即结束，滞空计时作废
+    combo = 0
+    setFever(false)
+    updateComboHud()
+    airTime = 0
 
     // 动效反馈：撞得越狠震得越明显
     cameraRig.addShake(Math.min(1, 0.45 + impact / 14))
@@ -149,6 +266,7 @@ function init() {
     if (finalDistanceEl) finalDistanceEl.textContent = `${distance} m`
     if (finalSpeedEl) finalSpeedEl.textContent = `${Math.round(maxSpeedKmh)} km/h`
     if (finalBestEl) finalBestEl.textContent = `${bestDistance} m`
+    if (finalScoreEl) finalScoreEl.textContent = String(score)
     if (bestEl) bestEl.textContent = String(bestDistance)
     if (resultLabelEl) {
       resultLabelEl.textContent = isRecord ? 'NEW RECORD' : 'RUN OVER'
@@ -163,18 +281,35 @@ function init() {
 
     audio.unlock()
     audio.click()
+    // 清空按键与起跳请求：用 Space 重开时不会顺带触发一次起跳
+    input.reset()
 
     if (gameoverEl) gameoverEl.hidden = true
     if (resultLabelEl) resultLabelEl.classList.remove('is-record')
     maxSpeedKmh = 0
+
+    // 重置连击 / Fever / 滞空 / 得分
+    combo = 0
+    fever = false
+    feverFactor = 0
+    score = 0
+    airTime = 0
+    hasLanded = false
+    player.setFever(false)
+    updateComboHud()
+    floatingText.clear()
+
     if (speedEl) speedEl.textContent = '0'
     if (distanceEl) distanceEl.textContent = '0'
+    if (scoreEl) scoreEl.textContent = '0'
 
     player.reset({ x: 0, y: terrain.getHeightAt(0, 0) + 1.4, z: 0 })
     // 传回起点后清理远处孤立 Chunk，并补齐起点周围地形 / 障碍
     terrain.update(0)
+    // 穿门检测的上一帧位置也要清空，避免重开瞬间误判
+    obstacles.reset()
 
-    cameraRig.snap(player.visual.position)
+    cameraRig.snap(player.visual.position, player.getHeadWorldPosition(cameraHead))
     sceneManager.followSun(player.visual.position)
     running = true
   }
@@ -199,9 +334,15 @@ function init() {
     timer.update()
     const delta = Math.min(timer.getDelta(), 0.05)
 
+    // 读取转向意图（-1 左 / 0 不动 / +1 右）
+    const steer = input.axis
+
     if (running) {
-      // 读取转向意图（-1 左 / 0 不动 / +1 右）
-      const steer = input.axis
+      // ---- 主动起跳：Space / 移动端快速点按 ----
+      // 只有贴地时有效；起跳冲量在本次物理积分中生效
+      if (input.consumeJump() && player.jump()) {
+        cameraRig.addShake(0.12)
+      }
 
       // 物理推进前施加前向推力与转向力
       player.preStep(delta, steer)
@@ -216,6 +357,41 @@ function init() {
       maxSpeedKmh = Math.max(maxSpeedKmh, player.speedKmh)
     }
 
+    // ---- 贴地判定 / 滞空计分 ----
+    // 用「球心到雪面的高度差」判断是否贴地：0.9m 约为球半径 + 容差
+    const bodyPosition = player.body.position
+    const groundGap = bodyPosition.y - terrain.getHeightAt(bodyPosition.x, bodyPosition.z)
+    const grounded = groundGap < 0.9
+    player.grounded = grounded
+
+    if (running) {
+      if (!grounded) {
+        // 出生时的第一次下坠不算腾空，必须先完成一次落地
+        if (hasLanded) airTime += delta
+      } else {
+        if (hasLanded && airTime > 0.34) {
+          // 基础 500 分，滞留越久奖励越高
+          const points = 500 + Math.round((airTime - 0.34) * 800)
+          score += points
+          if (scoreEl) scoreEl.textContent = String(score)
+
+          player.getHeadWorldPosition(headTop)
+          headTop.y += 1.25
+          floatingText.show(`+${points} 完美腾空！`, headTop, {
+            color: '#fff1a8',
+            size: 22,
+          })
+          cameraRig.addShake(0.18)
+        }
+        airTime = 0
+        hasLanded = true
+      }
+    }
+
+    // Fever 视觉强度做平滑过渡，避免状态切换时画面突变
+    feverFactor +=
+      ((fever ? 1 : 0) - feverFactor) * (1 - Math.exp(-3 * delta))
+
     // 风噪随速度变化。撞击后物理已冻结、刚体速度仍停在撞击瞬间，
     // 因此结算期间显式传 0，让风声自然淡出而不是一直呼啸
     audio.setSpeed(running ? player.speedKmh : 0)
@@ -223,12 +399,44 @@ function init() {
     // 冻结时也同步视觉姿态（只做平滑，不改变物理位置）
     player.sync(delta)
 
-    // 越肩相机平滑跟随（传入地形高度采样，防止相机钻进雪坡），
-    // 并让阳光阴影范围始终覆盖玩家
-    cameraRig.update(delta, player.visual.position, groundHeightAt)
+    // ---- 扬雪尾迹 ----
+    // 腾空时停止发射；Fever 状态下切换为彩虹色并提高密度
+    snowTrail.update(delta, {
+      x: bodyPosition.x,
+      y: bodyPosition.y,
+      z: bodyPosition.z,
+      yaw: player.yaw,
+      speedKmh: player.speedKmh,
+      grounded,
+      running,
+      fever: feverFactor,
+    })
+
+    // 旗门穿越检测与过门粒子推进
+    obstacles.update(bodyPosition)
+    gateBurst.update(delta)
+
+    // 相机跟随：第三人称 / 第一人称共用同一套阻尼逻辑，
+    // 传入头部锚点、朝向、转向与 Fever 强度
+    player.getHeadWorldPosition(cameraHead)
+    cameraRig.update(
+      delta,
+      player.visual.position,
+      groundHeightAt,
+      running ? player.speedKmh : 0,
+      {
+        headPosition: cameraHead,
+        yaw: player.yaw,
+        steer: running ? steer : 0,
+        fever: feverFactor,
+      }
+    )
     sceneManager.followSun(player.visual.position)
 
     sceneManager.render()
+
+    // 浮动文字在渲染之后更新：此时相机矩阵已刷新，投影不会滞后一帧
+    floatingText.update(delta, camera)
 
     // 首帧渲染完成后隐藏启动遮罩
     if (firstFrame) {
@@ -267,10 +475,22 @@ function init() {
       obstacles,
       player,
       cameraRig,
+      snowTrail,
+      gateBurst,
+      floatingText,
       input,
       audio,
       get running() {
         return running
+      },
+      get combo() {
+        return combo
+      },
+      get fever() {
+        return fever
+      },
+      get score() {
+        return score
       },
       crash,
       restart,
@@ -281,10 +501,15 @@ function init() {
   window.addEventListener('beforeunload', () => {
     cancelAnimationFrame(rafId)
     window.removeEventListener('keydown', handleRestartKey)
+    window.removeEventListener('keydown', handleViewKey)
+    viewButton?.removeEventListener('click', toggleView)
     restartButton?.removeEventListener('click', restart)
     muteButton?.removeEventListener('click', handleMuteClick)
     input.dispose()
     audio.dispose()
+    snowTrail.dispose()
+    gateBurst.dispose()
+    floatingText.dispose()
     sceneManager.dispose()
   })
 }

@@ -18,6 +18,10 @@ export class InputController {
     this.keys = new Set()
     // 移动端触点：touchIdentifier -> -1(左) / +1(右)
     this.touches = new Map()
+    // 触点的起始信息，用于区分「按住转向」和「快速点按起跳」
+    this.touchStarts = new Map()
+    // 起跳请求：键盘 Space 或移动端快速点按都会置位，由主循环消费
+    this.jumpQueued = false
 
     // 绑定事件处理函数，便于 dispose 时精确移除
     this.onKeyDown = this.handleKeyDown.bind(this)
@@ -41,6 +45,13 @@ export class InputController {
       // 阻止方向键滚动页面
       event.preventDefault()
       this.keys.add(event.code)
+      return
+    }
+
+    // 空格：起跳。按住时不重复触发
+    if (event.code === 'Space') {
+      event.preventDefault()
+      if (!event.repeat) this.jumpQueued = true
     }
   }
 
@@ -59,6 +70,11 @@ export class InputController {
     event.preventDefault()
     for (const touch of event.changedTouches) {
       this.touches.set(touch.identifier, touch.clientX < window.innerWidth / 2 ? -1 : 1)
+      this.touchStarts.set(touch.identifier, {
+        time: performance.now(),
+        x: touch.clientX,
+        y: touch.clientY,
+      })
     }
   }
 
@@ -77,14 +93,32 @@ export class InputController {
 
   handleTouchEnd(event) {
     for (const touch of event.changedTouches) {
+      const start = this.touchStarts.get(touch.identifier)
+      if (start) {
+        const duration = performance.now() - start.time
+        const distance = Math.hypot(touch.clientX - start.x, touch.clientY - start.y)
+        // 短促、几乎不移动的触点视为「点按屏幕」→ 起跳；
+        // 长按 / 滑动仍然只负责转向
+        if (duration < 240 && distance < 16) this.jumpQueued = true
+        this.touchStarts.delete(touch.identifier)
+      }
       this.touches.delete(touch.identifier)
     }
+  }
+
+  /** 消费一次起跳请求（主循环每帧调用） */
+  consumeJump() {
+    if (!this.jumpQueued) return false
+    this.jumpQueued = false
+    return true
   }
 
   /** 切到后台 / 失焦时清空输入，防止「一直按住」的卡键 */
   reset() {
     this.keys.clear()
     this.touches.clear()
+    this.touchStarts.clear()
+    this.jumpQueued = false
   }
 
   /**

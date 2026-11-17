@@ -7,7 +7,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#8ecdf7" />
+    <meta name="theme-color" content="#e8bcc6" />
     <!-- 内联 SVG favicon：避免 dev / 生产环境出现 favicon.ico 404 -->
     <link
       rel="icon"
@@ -32,14 +32,27 @@
         <span>速度 <b id="speed">0</b> km/h</span>
         <span>距离 <b id="distance">0</b> m</span>
         <span>最佳 <b id="best">0</b> m</span>
+        <span>得分 <b id="score">0</b></span>
       </div>
+    </div>
+
+    <!-- 连击 / Fever 状态：Combo ≥ 1 时显示，第 5 连进入 Fever -->
+    <div id="combo" class="combo" hidden>
+      <span class="combo__label">COMBO</span>
+      <b id="combo-value" class="combo__value">0</b>
     </div>
 
     <!-- 音效开关：默认开启，状态写入 localStorage -->
     <button id="mute" class="mute" type="button" aria-label="音效开关">音效 开</button>
 
+    <!-- 视角切换：V 键或点击按钮 -->
+    <button id="view" class="view" type="button" aria-label="切换第一 / 第三人称">第三人称</button>
+
     <!-- 操作提示：桌面键盘 / 移动端触控 -->
-    <div class="hint">A / D 或 ← → 转向 · 左右半屏触控</div>
+    <div class="hint">A / D 转向 · Space / 点按跳跃 · V 切换视角</div>
+
+    <!-- 世界坐标浮动文字（腾空奖励 / Fever 提示） -->
+    <div id="floaters" class="floaters"></div>
 
     <!-- 撞击结算面板 -->
     <div id="gameover" class="gameover" hidden>
@@ -58,6 +71,10 @@
           <div class="gameover__stat">
             <span>最佳记录</span>
             <b id="final-best">0 m</b>
+          </div>
+          <div class="gameover__stat">
+            <span>本局得分</span>
+            <b id="final-score">0</b>
           </div>
         </div>
         <button id="restart" class="gameover__btn" type="button">再来一次</button>

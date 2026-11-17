@@ -16,19 +16,23 @@ export class SceneManager {
 
     this.container = container
 
-    // 天空与雾使用同一色系，远处的雪坡会自然溶进天空，掩盖地形 Chunk 的边界
-    this.skyColor = new THREE.Color(0x8ecdf7)
-
     this.scene = new THREE.Scene()
-    this.scene.background = this.skyColor
-    // 雾的远端略小于相机远裁剪面，让「无尽地形」的生成/销毁不容易被玩家察觉
-    this.scene.fog = new THREE.Fog(this.skyColor, 55, 190)
+    // 背景交给 CSS 渐变：canvas 透明，天空由 #app 的 linear-gradient 绘制。
+    // 这样天空渐变不占 WebGL 绘制成本，也便于在真机上直接调色。
+
+    // 指数雾：颜色取天空渐变靠近地平线的那一段粉色，
+    // 远处地形与树木会自然融进背景，不会出现硬切边
+    // 低饱和度的莫兰迪落日粉紫：与 CSS 天空渐变保持同一色系
+    this.fogColor = new THREE.Color(0xd9bccd)
+    this.scene.fog = new THREE.FogExp2(this.fogColor, 0.0042)
 
     this.camera = this.createCamera()
     this.renderer = this.createRenderer()
 
-    // 平行光的位置需要跟随玩家移动（否则走到远处就没有阴影了），这里缓存初始偏移
-    this.sunOffset = new THREE.Vector3(32, 56, 24)
+    // 平行光的位置需要跟随玩家移动（否则走到远处就没有阴影了）。
+    // 夕阳放在玩家「正前方偏右」：雪坡朝向镜头的面才会被暖光打亮，
+    // 影子被拉长并投向镜头，这是日落逆光最有氛围的角度
+    this.sunOffset = new THREE.Vector3(28, 15, -40)
     this.createLights()
 
     this.handleResize = this.handleResize.bind(this)
@@ -39,7 +43,9 @@ export class SceneManager {
   /** 第三人称越肩视角的透视相机：视野略广，近裁剪面小，便于贴近雪面 */
   createCamera() {
     const aspect = window.innerWidth / window.innerHeight
-    const camera = new THREE.PerspectiveCamera(58, aspect, 0.1, 420)
+    // 基础 FOV 56，实际值由 CameraRig 按滑行速度动态拉伸到 72。
+    // 比野外雪原更收窄，配合更近的机位强化「在雪道里穿梭」的压迫感
+    const camera = new THREE.PerspectiveCamera(56, aspect, 0.1, 420)
     // 初始位置只是「开场机位」，后续会由玩家控制器每帧接管
     camera.position.set(0, 7, 13)
     camera.lookAt(0, 0, -26)
@@ -50,12 +56,13 @@ export class SceneManager {
     const renderer = new THREE.WebGLRenderer({
       antialias: true, // 低多边形 + 细边缘，抗锯齿对观感提升明显
       powerPreference: 'high-performance', // 移动端优先请求独立 GPU
-      alpha: false,
+      alpha: true, // 透明清屏，让 CSS 渐变天空透出来
     })
 
     // 移动端高 DPR 屏幕最多渲染 2 倍，超过后性能收益极低、发热明显
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(window.innerWidth, window.innerHeight)
+    renderer.setClearAlpha(0)
 
     // 阴影：平行光只覆盖玩家附近的一小块区域，普通 PCF 足够
     // 注意：Three.js r187 已移除 PCFSoftShadowMap，继续使用会产生控制台警告
@@ -65,19 +72,25 @@ export class SceneManager {
     // 输出为 sRGB，保证颜色与设计稿一致（Three.js 新版本默认值，这里显式声明便于移植）
     renderer.outputColorSpace = THREE.SRGBColorSpace
 
+    // 日落场景动态范围很大（暖光高光 vs 冷色暗部），
+    // ACES 会把高光平滑压到近白，避免雪面被橙色直接染成土黄
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.0
+
     this.container.appendChild(renderer.domElement)
     return renderer
   }
 
   /** 环境光负责托底亮度，平行光负责方向感与投影 */
   createLights() {
-    // 环境光：雪地会强烈反射光，环境光稍高可避免背光面死黑
-    const ambient = new THREE.AmbientLight(0xdff1ff, 0.85)
+    // 环境光：冷色浅蓝紫，强度较低，只负责让背光面不发黑
+    const ambient = new THREE.AmbientLight(0x607d8b, 0.6)
     this.scene.add(ambient)
 
-    // 主光源（模拟太阳）：偏暖色，与冷色雪地形成对比。
-    // Three.js 新版本采用物理光照单位，强度需明显高于旧版才能得到「雪白」的观感
-    const sun = new THREE.DirectionalLight(0xfff2dc, 3.0)
+    // 主光源（模拟夕阳）：强烈的暖橘色，低角度斜射。
+    // 强度明显高于 1.5：Three.js 采用物理光照单位，低强度会让雪地整体发灰发棕；
+    // 配合 ACES 色调映射，受光面仍是金白色，而不是纯橙色
+    const sun = new THREE.DirectionalLight(0xff8c00, 4.2)
     sun.position.copy(this.sunOffset)
     sun.castShadow = true
 
@@ -85,22 +98,35 @@ export class SceneManager {
     sun.shadow.mapSize.set(2048, 2048)
     sun.shadow.bias = -0.0004
     // normalBias 可消除低多边形大平面上的「阴影条纹」瑕疵
-    sun.shadow.normalBias = 0.04
+    sun.shadow.normalBias = 0.05
     sun.shadow.camera.near = 1
-    sun.shadow.camera.far = 220
+    sun.shadow.camera.far = 240
 
-    // 阴影相机只覆盖焦点附近 ±45 的区域：范围越小，阴影越清晰
-    const shadowSize = 45
+    // 阴影相机覆盖以玩家为中心的 ±80m：
+    // 既要罩住两侧约 ±45m 的树墙，也要容纳低角度夕阳投下的长影子
+    const shadowSize = 80
     sun.shadow.camera.left = -shadowSize
     sun.shadow.camera.right = shadowSize
     sun.shadow.camera.top = shadowSize
     sun.shadow.camera.bottom = -shadowSize
+    // 修改正交相机边界后必须刷新投影矩阵，否则阴影贴图会按旧范围裁切，
+    // 表现为边缘锯齿、阴影断裂
+    sun.shadow.camera.updateProjectionMatrix()
 
     this.scene.add(sun)
     // target 必须加入场景，否则它的世界矩阵不会更新
     this.scene.add(sun.target)
 
     this.sun = sun
+
+    // 天光补光：一盏高处的冷蓝平行光，模拟天空反射。
+    // 它不产生阴影，只把朝上的雪面抬亮，让暗部呈冷蓝色而不是脏灰色
+    const skyFill = new THREE.DirectionalLight(0x8aa6d8, 1.7)
+    skyFill.position.set(0, 70, 25)
+    skyFill.castShadow = false
+    this.scene.add(skyFill)
+    this.scene.add(skyFill.target)
+    this.skyFill = skyFill
   }
 
   /**

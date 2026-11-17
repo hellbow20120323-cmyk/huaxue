@@ -14,8 +14,8 @@ body,
 }
 
 body {
-  /* 与场景天空同色，避免首帧白屏闪烁 */
-  background: #8ecdf7;
+  /* 与天空底部同色，避免 iOS 回弹时露出白底 */
+  background: #cbbcd8;
   color: #0d2a3d;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   /* 移动端关键：禁止页面滚动/下拉回弹/长按选中，否则会干扰游戏触控 */
@@ -24,6 +24,11 @@ body {
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  /* 莫兰迪落日：柔和桃粉 → 灰粉 → 淡紫灰，低饱和度不刺眼 */
+  background: linear-gradient(to bottom, #e8bcc6 0%, #ddbbce 55%, #cbbcd8 100%);
 }
 
 #app canvas {
@@ -118,12 +123,12 @@ body {
   pointer-events: none;
 }
 
-/* ==================== 音效开关 ==================== */
-.mute {
+/* ==================== 音效 / 视角按钮 ==================== */
+.mute,
+.view {
   position: fixed;
   right: calc(env(safe-area-inset-right, 0px) + 16px);
-  top: calc(env(safe-area-inset-top, 0px) + 104px);
-  z-index: 25; /* 高于结算面板（20），保证结算时仍能开 / 关音效 */
+  z-index: 25; /* 高于结算面板（20），保证结算时仍能操作 */
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.6);
@@ -137,8 +142,102 @@ body {
   cursor: pointer;
 }
 
+.mute {
+  top: calc(env(safe-area-inset-top, 0px) + 132px);
+}
+
+.view {
+  top: calc(env(safe-area-inset-top, 0px) + 168px);
+}
+
 .mute[aria-pressed='true'] {
   color: rgba(18, 75, 107, 0.5);
+}
+
+.view[aria-pressed='true'] {
+  color: #1c6f9c;
+  border-color: rgba(28, 111, 156, 0.35);
+}
+
+/* ==================== 连击 / Fever 徽章 ==================== */
+.combo {
+  position: fixed;
+  left: 50%;
+  top: calc(env(safe-area-inset-top, 0px) + 84px);
+  z-index: 15;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #124b6b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.combo[hidden] {
+  display: none;
+}
+
+.combo__value {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.combo.is-fever {
+  color: #ffffff;
+  background: linear-gradient(90deg, rgba(255, 196, 61, 0.95), rgba(255, 92, 61, 0.95));
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 26px rgba(255, 150, 60, 0.65);
+  animation: fever-pulse 0.85s ease-in-out infinite;
+}
+
+.combo.is-fever .combo__label::after {
+  content: ' · FEVER';
+}
+
+@keyframes fever-pulse {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+  50% {
+    transform: translateX(-50%) scale(1.06);
+  }
+}
+
+/* ==================== 世界坐标浮动文字 ==================== */
+.floaters {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.floater {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow:
+    0 2px 10px rgba(30, 20, 60, 0.45),
+    0 0 18px rgba(255, 220, 120, 0.55);
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
 }
 
 /* ==================== 撞击结算面板 ==================== */
@@ -191,9 +290,10 @@ body {
 }
 
 .gameover__stats {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 10px;
-  margin: 20px 0 22px;
+  margin: 18px 0 20px;
 }
 
 .gameover__stat {
@@ -271,7 +371,7 @@ body {
   font-size: 13px;
   letter-spacing: 0.08em;
   color: #124b6b;
-  background: linear-gradient(180deg, #a9dcff 0%, #e9f6ff 100%);
+  background: linear-gradient(180deg, #e8bcc6 0%, #cbbcd8 100%);
   transition: opacity 0.45s ease;
   z-index: 10;
 }
