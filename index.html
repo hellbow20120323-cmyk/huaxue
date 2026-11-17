@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 适配刘海屏；禁用缩放避免移动端误触双指缩放 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#8ecdf7" />
+    <!-- 内联 SVG favicon：避免 dev / 生产环境出现 favicon.ico 404 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238ecdf7'/%3E%3Cpath d='M4 25 L12 9 L19 20 L23 13 L29 25 Z' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <title>雪境速降 · Snow Rush</title>
+  </head>
+
+  <body>
+    <!-- Three.js 的 canvas 会被挂载到这里 -->
+    <div id="app"></div>
+
+    <!-- HUD：仅用于开发期展示当前进度与性能，后续接入正式 UI 时可替换 -->
+    <div class="hud">
+      <div class="hud__panel">
+        <span class="hud__tag">挑战最佳</span>
+        <h1 class="hud__title">雪境速降</h1>
+        <p class="hud__desc">转向避障 · 撞击结算</p>
+      </div>
+      <div class="hud__stats">
+        <span>FPS <b id="fps">--</b></span>
+        <span>速度 <b id="speed">0</b> km/h</span>
+        <span>距离 <b id="distance">0</b> m</span>
+        <span>最佳 <b id="best">0</b> m</span>
+      </div>
+    </div>
+
+    <!-- 音效开关：默认开启，状态写入 localStorage -->
+    <button id="mute" class="mute" type="button" aria-label="音效开关">音效 开</button>
+
+    <!-- 操作提示：桌面键盘 / 移动端触控 -->
+    <div class="hint">A / D 或 ← → 转向 · 左右半屏触控</div>
+
+    <!-- 撞击结算面板 -->
+    <div id="gameover" class="gameover" hidden>
+      <div class="gameover__card">
+        <span class="gameover__label" id="result-label">RUN OVER</span>
+        <h2 class="gameover__title">撞上障碍，滑行结束</h2>
+        <div class="gameover__stats">
+          <div class="gameover__stat">
+            <span>滑行距离</span>
+            <b id="final-distance">0 m</b>
+          </div>
+          <div class="gameover__stat">
+            <span>最高速度</span>
+            <b id="final-speed">0 km/h</b>
+          </div>
+          <div class="gameover__stat">
+            <span>最佳记录</span>
+            <b id="final-best">0 m</b>
+          </div>
+        </div>
+        <button id="restart" class="gameover__btn" type="button">再来一次</button>
+        <p class="gameover__tip">按 Space / Enter 或点击按钮重开</p>
+      </div>
+    </div>
+
+    <!-- 启动遮罩：首帧渲染完成后淡出 -->
+    <div id="boot" class="boot">
+      <div class="boot__spinner"></div>
+      <p>正在生成雪山…</p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
